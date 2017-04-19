@@ -1,0 +1,6 @@
+[submodule "vendor/github.com/gorilla/websocket"]
+	path = vendor/github.com/gorilla/websocket
+	url = https://github.com/gorilla/websocket
+[submodule "vendor/github.com/OneOfOne/xxhash"]
+	path = vendor/github.com/OneOfOne/xxhash
+	url = https://github.com/OneOfOne/xxhash
