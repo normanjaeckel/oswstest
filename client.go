@@ -186,11 +186,11 @@ func (c *client) Login() (err error) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-			// If the error is on the server side, then retry
-			loginErrorCount++
-			continue
+		if resp.StatusCode < 500 || resp.StatusCode >= 600 {
+			break
 		}
+		// If the error is on the server side, then retry
+		loginErrorCount++
 	}
 
 	if resp.StatusCode != 200 {

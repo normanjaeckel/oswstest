@@ -21,6 +21,8 @@ func main() {
 		clients = append(clients, client)
 	}
 
+	fmt.Printf("Use %d clients\n", len(clients))
+
 	// Login all clients
 	var wg sync.WaitGroup
 	wg.Add(len(clients))
