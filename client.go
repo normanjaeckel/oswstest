@@ -191,6 +191,7 @@ func (c *client) Login() (err error) {
 		}
 		// If the error is on the server side, then retry
 		loginErrorCount++
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if resp.StatusCode != 200 {
@@ -231,30 +232,48 @@ func (c *client) Send() (err error) {
 	return nil
 }
 
-// login one clientafter another. Reads the clients from a channel until the
-// channel is closed.
-func loginWorker(in chan Client, errChan chan error, connected chan time.Duration) {
-	for client := range in {
-		start := time.Now()
-		err := client.Connect()
-		if err != nil {
-			errChan <- err
-		} else {
-			connected <- time.Since(start)
-		}
-	}
-}
-
-// Login a slice of clients. Uses X loginWorker to work X clients in parallel.
-func loginClients(clients []Client, errChan chan error, connected chan time.Duration) {
-	toLogin := make(chan Client)
-	defer close(toLogin)
+// Connects a slice of clients. Uses X connectWorker to work X clients in parallel.
+func connectClients(clients []Client, errChan chan error, connected chan time.Duration) {
+	toWorker := make(chan Client)
+	defer close(toWorker)
 	// Start workers
 	for i := 0; i < ParallelConnections; i++ {
-		go loginWorker(toLogin, errChan, connected)
+		go func() {
+			for client := range toWorker {
+				start := time.Now()
+				err := client.Connect()
+				if err != nil {
+					errChan <- err
+				} else {
+					connected <- time.Since(start)
+				}
+			}
+		}()
 	}
 	// Send clients to workers
 	for _, client := range clients {
-		toLogin <- client
+		toWorker <- client
+	}
+}
+
+// Login a slice of clients. Uses X connectWorker to work X clients in parallel.
+// Expects the clients to be AuthClients
+func loginClients(clients []Client) {
+	toWorker := make(chan Client)
+	defer close(toWorker)
+	// Start workers
+	for i := 0; i < ParallelLogins; i++ {
+		go func() {
+			for client := range toWorker {
+				err := client.(AuthClient).Login()
+				if err != nil {
+					log.Fatalf("Can not login client %s", client)
+				}
+			}
+		}()
+	}
+	// Send clients to workers
+	for _, client := range clients {
+		toWorker <- client
 	}
 }

@@ -4,8 +4,8 @@ package main
 // ConnectionTest there is no difference between the to clients. The AdminClient
 // is needed to write data.
 const (
-	NormalClients = 20
-	AdminClients  = 20
+	NormalClients = 100
+	AdminClients  = 100
 )
 
 const (
@@ -25,7 +25,7 @@ const (
 	// MaxLoginAttemts is the number of tries for each client to login. If one
 	// client fails more then this number, then the program is quit with a fatal
 	// error.
-	MaxLoginAttemts = 1
+	MaxLoginAttemts = 5
 
 	// MaxConnectionAttemts is th enumber of tries for each client, to connect via
 	// websocket. If a client fails, is program is not quit, but the error is shoun
@@ -38,7 +38,10 @@ const (
 
 	// ParallelConnections defines the number of connections, that are done in
 	// parallel. The number should be similar as the number of openslides workers.
-	ParallelConnections = 5
+	ParallelConnections = 2
+
+	// Same for logins
+	ParallelLogins = 10
 )
 
 const (

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"sync"
 )
 
 func main() {
@@ -24,19 +23,7 @@ func main() {
 	fmt.Printf("Use %d clients\n", len(clients))
 
 	// Login all clients
-	var wg sync.WaitGroup
-	wg.Add(len(clients))
-	for _, client := range clients {
-		go func(client AuthClient) {
-			defer wg.Done()
-			err := client.Login()
-			if err != nil {
-				log.Fatalf("Can not login client `%s`: %s", client, err)
-			}
-		}(client.(AuthClient))
-	}
-	// Wait until all clients are logged in
-	wg.Wait()
+	loginClients(clients)
 	log.Println("All Clients have logged in.")
 
 	// Run all tests and print the results

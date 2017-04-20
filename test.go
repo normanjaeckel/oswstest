@@ -36,8 +36,8 @@ func ConnectTest(clients []Client) (r []TestResult) {
 	errorReceived := make(chan error)
 	dataHash := make(chan uint64)
 
-	// Login all Clients
-	go loginClients(clients, connectedError, connected)
+	// Connect all Clients
+	go connectClients(clients, connectedError, connected)
 
 	for _, client := range clients {
 		go func(client Client) {
