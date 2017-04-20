@@ -170,3 +170,79 @@ func OneWriteTest(clients []Client) (r []TestResult) {
 
 	return []TestResult{dataReceivedResult}
 }
+
+// ManyWriteTest tests behave like the OneWriteTest but send many write request.
+// The first clients have to be admin clients. Sends one write request for each
+// admin client.
+// Expects, that at least one client is a logged-in admin client and that all
+// clients have open websocket connections.
+func ManyWriteTest(clients []Client) (r []TestResult) {
+	log.Println("Start ManyWriteTest")
+	startTest := time.Now()
+	defer func() { log.Printf("ManyWriteTest took %dms\n", time.Since(startTest)/time.Millisecond) }()
+
+	// Find all admins in the clients
+	var admins []AdminClient
+	for _, client := range clients {
+		admin, ok := client.(AdminClient)
+		if ok && admin.IsAdmin() && admin.IsConnected() {
+			admins = append(admins, admin)
+		}
+	}
+	if len(admins) == 0 {
+		log.Fatalf("Fatal: Expect one client in ManyWriteTest to be a connected AdminClient")
+	}
+
+	// Send requests for all admin clients
+	dataSended := make(chan time.Duration)
+	errorSended := make(chan error)
+	sendFinished := sendClients(admins, errorSended, dataSended)
+
+	// Listen for all clients to receive messages
+	dataReceived := make(chan time.Duration)
+	errorReceived := make(chan error)
+	dataHash := make(chan uint64)
+	receiveFinished := listenToClients(clients, dataReceived, dataHash, errorReceived, len(admins))
+
+	sendedResult := TestResult{description: "Time until all requests are sended"}
+	receivedResult := TestResult{description: "Time until all responses are received"}
+	var firstHash uint64
+	tick := time.Tick(time.Second)
+
+	for {
+		select {
+		case value := <-dataSended:
+			sendedResult.Add(value)
+
+		case value := <-errorSended:
+			sendedResult.AddError(value)
+
+		case value := <-dataReceived:
+			receivedResult.Add(value)
+
+		case value := <-errorReceived:
+			receivedResult.AddError(value)
+
+		case value := <-dataHash:
+			break // TODO: Does currently not work
+			if firstHash == 0 {
+				firstHash = value
+			} else if value != firstHash {
+				receivedResult.AddError(fmt.Errorf("diffrent data. %d bytes, expected %d bytes", value, firstHash))
+			}
+
+		case <-tick:
+			if LogStatus {
+				log.Println(sendedResult.CountBoth(), receivedResult.CountBoth())
+			}
+		}
+
+		// End the test when all admins have sended there data and each client got
+		// as many responces as there are admins.
+		if *sendFinished && *receiveFinished {
+			break
+		}
+	}
+
+	return []TestResult{sendedResult, receivedResult}
+}

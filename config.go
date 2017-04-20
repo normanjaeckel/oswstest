@@ -4,8 +4,8 @@ package main
 // ConnectionTest there is no difference between the to clients. The AdminClient
 // is needed to write data.
 const (
-	NormalClients = 100
-	AdminClients  = 100
+	NormalClients = 10
+	AdminClients  = 10
 )
 
 const (
@@ -42,6 +42,9 @@ const (
 
 	// Same for logins
 	ParallelLogins = 10
+
+	// Same for sends in the ManySendTest
+	ParallelSends = 10
 )
 
 const (
@@ -61,8 +64,14 @@ var Tests = []Test{
 	ConnectTest,
 
 	// OneWriteTest expects the first client to be an admin client and all clients
-	// to be connected. Therefore the test requires, tha the ConnectTest is run
+	// to be connected. Therefore the test requires, that the ConnectTest is run
 	// before. This test sends one write request with the first client and measures
 	// the time until all clients get the changed data.
 	OneWriteTest,
+
+	// ManyWriteTests expects at least one client to be an admin client and all clients
+	// to be connected. Therefore the test requires, that the ConnectTest is run
+	// before. This test sends one write request for each admin client and measures
+	// the time until all write requests are send and until all data is received.
+	ManyWriteTest,
 }

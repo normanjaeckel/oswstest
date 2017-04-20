@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/OneOfOne/xxhash"
 	"github.com/gorilla/websocket"
 )
 
@@ -257,11 +259,17 @@ func connectClients(clients []Client, errChan chan error, connected chan time.Du
 }
 
 // Login a slice of clients. Uses X connectWorker to work X clients in parallel.
-// Expects the clients to be AuthClients
+// Expects the clients to be AuthClients.
+// Blocks until all clients are logged in.
 func loginClients(clients []Client) {
+	// Block the function until all clients are logged in
+	var wg sync.WaitGroup
+	wg.Add(len(clients))
+	defer wg.Wait()
+
+	// Start workers
 	toWorker := make(chan Client)
 	defer close(toWorker)
-	// Start workers
 	for i := 0; i < ParallelLogins; i++ {
 		go func() {
 			for client := range toWorker {
@@ -269,11 +277,91 @@ func loginClients(clients []Client) {
 				if err != nil {
 					log.Fatalf("Can not login client %s", client)
 				}
+				wg.Done()
 			}
 		}()
 	}
+
 	// Send clients to workers
 	for _, client := range clients {
 		toWorker <- client
 	}
+}
+
+// Send the write request for a slice of AdminClients.
+// The return value is set to true, when messages where send.
+func sendClients(clients []AdminClient, errChan chan error, sended chan time.Duration) *bool {
+	var done bool
+	go func() {
+		// First close the channel (to signal the workers to finish)
+		// Then wait for all workers to finish
+		// Then set the done variable to true
+		defer func() { done = true }()
+		var wg sync.WaitGroup
+		wg.Add(len(clients))
+		defer wg.Wait()
+		toWorker := make(chan AdminClient)
+		defer close(toWorker)
+
+		// Start workers
+		for i := 0; i < ParallelSends; i++ {
+			go func() {
+				for client := range toWorker {
+					start := time.Now()
+					err := client.Send()
+					if err != nil {
+						errChan <- err
+					} else {
+						sended <- time.Since(start)
+					}
+				}
+				wg.Done()
+			}()
+		}
+		// Send clients to workers
+		for _, client := range clients {
+			toWorker <- client
+		}
+	}()
+	return &done
+}
+
+// Listens to the read and error channels of a list of clients. Sends the results
+// via three channels. One for the data and one for the error (duration since started)
+// and a third channel to send the hash of the data.
+// Ends the process, when each client got count messages or one errors. When this happens,
+// then the returned channel is closed.
+// This function does not block (for long).
+func listenToClients(clients []Client, data chan time.Duration, dataHash chan uint64, err chan error, count int) *bool {
+	start := time.Now()
+	var done bool
+
+	go func() {
+		// Wait until all clients got there messages, then set done to true
+		defer func() { done = true }()
+		var wg sync.WaitGroup
+		wg.Add(len(clients))
+		defer wg.Wait()
+
+		for _, client := range clients {
+			go func(client Client) {
+				for i := 0; i < count; i++ {
+					select {
+					case value := <-client.GetReadChannel():
+						data <- time.Since(start)
+						hash := xxhash.New64()
+						hash.Write(value)
+						dataHash <- hash.Sum64()
+
+					case value := <-client.GetErrorChannel():
+						err <- value
+						i = count // The client is finish
+					}
+				}
+				wg.Done()
+			}(client)
+		}
+
+	}()
+	return &done
 }
