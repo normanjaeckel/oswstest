@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/OneOfOne/xxhash"
 )
 
 // Test is a function, that expect a slice of clients and returns a slice of
@@ -15,6 +13,8 @@ type Test func(clients []Client) (r []TestResult)
 // RunTests runs some tests for a slice of clients. It returns the TestResults
 // for each test.
 func RunTests(clients []Client, tests []Test) (r []TestResult) {
+	start := time.Now()
+	defer func() { fmt.Printf("\nAll tests took %dms\n\n", time.Since(start)/time.Millisecond) }()
 	for _, test := range tests {
 		r = append(r, test(clients)...)
 	}
@@ -28,38 +28,21 @@ func RunTests(clients []Client, tests []Test) (r []TestResult) {
 func ConnectTest(clients []Client) (r []TestResult) {
 	log.Println("Start ConnectTest")
 	startTest := time.Now()
-	defer func() { log.Printf("ConnectionTest took %dms\n", time.Since(startTest)/time.Millisecond) }()
+	defer func() { log.Printf("ConnectionTest took %dms", time.Since(startTest)/time.Millisecond) }()
 
+	// Connect all Clients
 	connected := make(chan time.Duration)
 	connectedError := make(chan error)
+	connectFinished := connectClients(clients, connectedError, connected)
+
+	// Listen to all clients to receive the response.
 	dataReceived := make(chan time.Duration)
 	errorReceived := make(chan error)
 	dataHash := make(chan uint64)
-
-	// Connect all Clients
-	go connectClients(clients, connectedError, connected)
-
-	for _, client := range clients {
-		go func(client Client) {
-			start := time.Now()
-			select {
-			case value := <-client.GetReadChannel():
-				dataReceived <- time.Since(start)
-				hash := xxhash.New64()
-				// Currently, the data for admin clients and login clients are different
-				// The current solution is, not to check the data
-				_ = value
-				hash.Write([]byte{})
-				dataHash <- hash.Sum64()
-
-			case value := <-client.GetErrorChannel():
-				errorReceived <- value
-			}
-		}(client)
-	}
+	receivedFinished := listenToClients(clients, dataReceived, dataHash, errorReceived, 1)
 
 	connectedResult := TestResult{description: "Time to established connection"}
-	dataReceivedResult := TestResult{description: "Time until data was reveiced"}
+	dataReceivedResult := TestResult{description: "Time until data have been reveiced"}
 	var firstHash uint64
 	tick := time.Tick(time.Second)
 
@@ -75,6 +58,8 @@ func ConnectTest(clients []Client) (r []TestResult) {
 			dataReceivedResult.Add(value)
 
 		case value := <-dataHash:
+			// TODO Does currently not work
+			break
 			if firstHash == 0 {
 				firstHash = value
 			} else if value != firstHash {
@@ -90,7 +75,7 @@ func ConnectTest(clients []Client) (r []TestResult) {
 			}
 		}
 
-		if connectedResult.CountBoth() >= len(clients) && dataReceivedResult.CountBoth() >= len(clients)-connectedResult.ErrCount() {
+		if *connectFinished && *receivedFinished {
 			break
 		}
 	}
@@ -106,56 +91,45 @@ func OneWriteTest(clients []Client) (r []TestResult) {
 	startTest := time.Now()
 	defer func() { log.Printf("OneWriteTest took %dms\n", time.Since(startTest)/time.Millisecond) }()
 
+	// Find the admin client.
 	admin, ok := clients[0].(AdminClient)
 	if !ok || !admin.IsAdmin() || !admin.IsConnected() {
 		log.Fatalf("Fatal: Expect the first client in OneWriteTest to be a connected AdminClient")
 	}
 
+	// Send the request.
 	err := admin.Send()
 	if err != nil {
 		log.Fatalf("Can not send request, %s", err)
 	}
 
-	start := time.Now()
+	// Listen to all clients to receive the response.
 	dataReceived := make(chan time.Duration)
 	errorReceived := make(chan error)
 	dataHash := make(chan uint64)
-
-	for _, client := range clients {
-		go func(client Client) {
-			select {
-			case value := <-client.GetReadChannel():
-				dataReceived <- time.Since(start)
-				hash := xxhash.New64()
-				// TODO fix the different data test
-				_ = value
-				hash.Write([]byte{})
-				dataHash <- hash.Sum64()
-
-			case value := <-client.GetErrorChannel():
-				errorReceived <- value
-			}
-		}(client)
-	}
+	finished := listenToClients(clients, dataReceived, dataHash, errorReceived, 1)
 
 	dataReceivedResult := TestResult{description: "Time until responce for one write request"}
 	var firstHash uint64
 	tick := time.Tick(time.Second)
 
+	// Listn to all channels until the listeing is finished
 	for {
 		select {
 		case value := <-dataReceived:
 			dataReceivedResult.Add(value)
 
+		case value := <-errorReceived:
+			dataReceivedResult.AddError(value)
+
 		case value := <-dataHash:
+			// TODO Does currently not work
+			break
 			if firstHash == 0 {
 				firstHash = value
 			} else if value != firstHash {
 				dataReceivedResult.AddError(fmt.Errorf("diffrent data. %d bytes, expected %d bytes", value, firstHash))
 			}
-
-		case value := <-errorReceived:
-			dataReceivedResult.AddError(value)
 
 		case <-tick:
 			if LogStatus {
@@ -163,7 +137,7 @@ func OneWriteTest(clients []Client) (r []TestResult) {
 			}
 		}
 
-		if dataReceivedResult.Count()+dataReceivedResult.ErrCount() >= len(clients) {
+		if *finished {
 			break
 		}
 	}
@@ -204,8 +178,8 @@ func ManyWriteTest(clients []Client) (r []TestResult) {
 	dataHash := make(chan uint64)
 	receiveFinished := listenToClients(clients, dataReceived, dataHash, errorReceived, len(admins))
 
-	sendedResult := TestResult{description: "Time until all requests are sended"}
-	receivedResult := TestResult{description: "Time until all responses are received"}
+	sendedResult := TestResult{description: "Time until all requests have been sended"}
+	receivedResult := TestResult{description: "Time until all responses have been received"}
 	var firstHash uint64
 	tick := time.Tick(time.Second)
 
@@ -224,7 +198,8 @@ func ManyWriteTest(clients []Client) (r []TestResult) {
 			receivedResult.AddError(value)
 
 		case value := <-dataHash:
-			break // TODO: Does currently not work
+			// TODO Does currently not work
+			break
 			if firstHash == 0 {
 				firstHash = value
 			} else if value != firstHash {

@@ -54,7 +54,7 @@ const (
 
 	// If LogStatus is true, then the program shows some output while the tests are
 	// running
-	LogStatus = true
+	LogStatus = false
 )
 
 // List of all tests to performe
