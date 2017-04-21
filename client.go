@@ -10,17 +10,15 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/OneOfOne/xxhash"
 	"github.com/gorilla/websocket"
 )
 
 type Client interface {
 	Connect() error
-	GetReadChannel() chan []byte
-	GetErrorChannel() chan error
 	String() string
 	IsAdmin() bool
 	IsConnected() bool
+	ExpectData(sinceTime chan time.Duration, err chan error, count int, finish chan bool, expect uint64, since *time.Time, sinceSet chan bool)
 }
 
 type AuthClient interface {
@@ -65,13 +63,14 @@ type client struct {
 	isAdmin  bool
 
 	wsRead  chan []byte
-	wsClose chan bool
 	wsError chan error
 
 	wsConnection *websocket.Conn
 	cookies      *cookiejar.Jar
 
-	connected bool
+	connected       time.Time
+	connectionError chan bool
+	waitForConnect  chan bool
 }
 
 // NewAnonymousClient creates an anonymous client.
@@ -81,10 +80,9 @@ func NewAnonymousClient() *client {
 		log.Fatalln("Can not create cookie jar, %s", err)
 	}
 	return &client{
-		wsRead:  make(chan []byte),
-		wsClose: make(chan bool),
-		wsError: make(chan error),
-		cookies: jar,
+		waitForConnect:  make(chan bool),
+		connectionError: make(chan bool),
+		cookies:         jar,
 	}
 }
 
@@ -108,7 +106,7 @@ func (c *client) IsAdmin() bool {
 }
 
 func (c *client) IsConnected() bool {
-	return c.connected
+	return !c.connected.IsZero()
 }
 
 func (c *client) String() string {
@@ -138,33 +136,105 @@ func (c *client) Connect() (err error) {
 			continue
 		}
 		// if no error happend, then we can break the loop
-		c.connected = true
 		break
 	}
 	if err != nil {
-		log.Printf("Count not connect client %s\n", c)
+		log.Printf("Could not connect client %s, %s\n", c, err)
+		close(c.connectionError)
 		return err
 	}
 
+	// Set the connected time to now and close the waitForConnect channel to signal
+	// that the client is now connected.
+	c.connected = time.Now()
+	close(c.waitForConnect)
+
 	go func() {
+		// Write all incomming messages into c.wsRead.
+		// Before SetChannel() wist called, this channel is nil, so all messages
+		// will be dropped.
 		defer c.wsConnection.Close()
 		for {
 			_, m, err := c.wsConnection.ReadMessage()
 			if err != nil {
 				c.wsError <- err
+				// TODO: What can happen after we break?
+				break
 			}
-			c.GetReadChannel() <- m
+			// Send the message to the channel. If no channel is set, then the message
+			// is send to /dev/null
+			// TODO: Maybe buffer the messages, so there is no problem, if a message
+			// is received before a test starts to listen?
+			c.wsRead <- m
 		}
 	}()
 	return nil
 }
 
-func (c *client) GetReadChannel() chan []byte {
-	return c.wsRead
+// Set the channels to receive data.
+func (c *client) SetChannels(read chan []byte, err chan error) {
+	if c.wsRead != nil || c.wsError != nil {
+		log.Fatalf("Second call to SetChannels on client %s. Please call ClearChannels before.\n", c)
+	}
+	c.wsRead = read
+	c.wsError = err
 }
 
-func (c *client) GetErrorChannel() chan error {
-	return c.wsError
+func (c *client) ClearChannels() {
+	c.wsRead = nil
+	c.wsError = nil
+}
+
+// ExpectData runs, until there are count websocket messages or one websocket error.
+// It sends the time since the the start of this function, but not before the websocket
+// connection was established. If since is nil, then the function waits until it
+// chances to something else. Therefore the sinceSet channel has to be closed.
+// If sinceChan != nil, then the time in since is used. In this case the function
+// blocks until sinceChan is closed. Make sure to set since before.
+// When count messages or one error was received, then it sends a signal
+// to the finish channel.
+// If expect it different then 0, then it checks, that the received message has the
+// same hash as expect and sends an error if not.
+func (c *client) ExpectData(sinceTime chan time.Duration, err chan error, count int, finish chan bool, expect uint64, since *time.Time, sinceSet chan bool) {
+	var start time.Time
+	defer func() { finish <- true }()
+
+	// Wait until the client is connected or the connection has failed
+	select {
+	case <-c.waitForConnect:
+		start = time.Now()
+
+	case <-c.connectionError:
+		// If the connection faild, then there is nothing to do here.
+		return
+	}
+
+	// Sets the channels to receive the data
+	readChan := make(chan []byte)
+	errChan := make(chan error)
+	c.SetChannels(readChan, errChan)
+	defer c.ClearChannels()
+
+	for i := 0; i < count; i++ {
+		select {
+		case data := <-readChan:
+			if expect != 0 && expect != hashData(data) {
+				err <- fmt.Errorf("Received data has a different hash. Expected: %d, Received: %d", expect, hashData(data))
+				return
+			}
+
+		case data := <-errChan:
+			err <- data
+			return
+		}
+	}
+	if sinceSet != nil {
+		// The since channel is set. Wait until the channel is closed and then
+		// (re-) set the start value
+		<-sinceSet
+		start = *since
+	}
+	sinceTime <- time.Since(start)
 }
 
 func (c *client) getLoginData() string {
@@ -342,45 +412,27 @@ func sendClients(clients []AdminClient, errChan chan error, sended chan time.Dur
 	return &done
 }
 
-// Listens to the read and error channels of a list of clients. Sends the results
-// via three channels. One for the data and one for the error (duration since started)
-// and a third channel to send the hash of the data.
+// Listens to a list of clients. Sends the results
+// via the given channels. One for the data (duration since connected) and one for errors.
 // Ends the process, when each client got count messages or one errors. When this happens,
-// then the returned channel is closed.
-// This function does not block (for long).
-func listenToClients(clients []Client, data chan time.Duration, dataHash chan uint64, err chan error, count int) *bool {
+// then the returned value is set to true.
+// This function does not block.
+func listenToClients(clients []Client, data chan time.Duration, err chan error, count int, since *time.Time, sinceSet chan bool) *bool {
 	var done bool
 
 	go func() {
-		// Wait until all clients got there messages, then set done to true
-		defer func() { done = true }()
-		var wg sync.WaitGroup
-		wg.Add(len(clients))
-		defer wg.Wait()
+		finish := make(chan bool)
 
 		for _, client := range clients {
-			go func(client Client) {
-				defer wg.Done()
-				start := time.Now()
-				for i := 0; i < count; i++ {
-					select {
-					case value := <-client.GetReadChannel():
-						// TODO: Test that alle hashes are the same when count>1
-						// TODO: Fix this
-						_ = value
-						// hash := xxhash.New64()
-						// hash.Write(value)
-						// dataHash <- hash.Sum64()
-
-					case value := <-client.GetErrorChannel():
-						err <- value
-						return
-					}
-				}
-				data <- time.Since(start)
-			}(client)
+			// TODO: Expected data
+			go client.ExpectData(data, err, count, finish, 0, since, sinceSet)
 		}
 
+		// Wait for all clients to send the finish signal
+		for i := 0; i < len(clients); i++ {
+			<-finish
+		}
+		done = true
 	}()
 	return &done
 }

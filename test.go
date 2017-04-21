@@ -38,12 +38,10 @@ func ConnectTest(clients []Client) (r []TestResult) {
 	// Listen to all clients to receive the response.
 	dataReceived := make(chan time.Duration)
 	errorReceived := make(chan error)
-	dataHash := make(chan uint64)
-	receivedFinished := listenToClients(clients, dataReceived, dataHash, errorReceived, 1)
+	receivedFinished := listenToClients(clients, dataReceived, errorReceived, 1, nil, nil)
 
 	connectedResult := TestResult{description: "Time to established connection"}
-	dataReceivedResult := TestResult{description: "Time until data have been reveiced"}
-	var firstHash uint64
+	dataReceivedResult := TestResult{description: "Time until data has been reveiced since the connection"}
 	tick := time.Tick(time.Second)
 
 	for {
@@ -56,15 +54,6 @@ func ConnectTest(clients []Client) (r []TestResult) {
 
 		case value := <-dataReceived:
 			dataReceivedResult.Add(value)
-
-		case value := <-dataHash:
-			// TODO Does currently not work
-			break
-			if firstHash == 0 {
-				firstHash = value
-			} else if value != firstHash {
-				dataReceivedResult.AddError(fmt.Errorf("diffrent data. %d bytes, expected %d bytes", value, firstHash))
-			}
 
 		case value := <-errorReceived:
 			dataReceivedResult.AddError(value)
@@ -106,11 +95,9 @@ func OneWriteTest(clients []Client) (r []TestResult) {
 	// Listen to all clients to receive the response.
 	dataReceived := make(chan time.Duration)
 	errorReceived := make(chan error)
-	dataHash := make(chan uint64)
-	finished := listenToClients(clients, dataReceived, dataHash, errorReceived, 1)
+	finished := listenToClients(clients, dataReceived, errorReceived, 1, nil, nil)
 
-	dataReceivedResult := TestResult{description: "Time until responce for one write request"}
-	var firstHash uint64
+	dataReceivedResult := TestResult{description: "Time until data is received after one write request"}
 	tick := time.Tick(time.Second)
 
 	// Listn to all channels until the listeing is finished
@@ -121,15 +108,6 @@ func OneWriteTest(clients []Client) (r []TestResult) {
 
 		case value := <-errorReceived:
 			dataReceivedResult.AddError(value)
-
-		case value := <-dataHash:
-			// TODO Does currently not work
-			break
-			if firstHash == 0 {
-				firstHash = value
-			} else if value != firstHash {
-				dataReceivedResult.AddError(fmt.Errorf("diffrent data. %d bytes, expected %d bytes", value, firstHash))
-			}
 
 		case <-tick:
 			if LogStatus {
@@ -175,12 +153,13 @@ func ManyWriteTest(clients []Client) (r []TestResult) {
 	// Listen for all clients to receive messages
 	dataReceived := make(chan time.Duration)
 	errorReceived := make(chan error)
-	dataHash := make(chan uint64)
-	receiveFinished := listenToClients(clients, dataReceived, dataHash, errorReceived, len(admins))
+	// TODO: Use the sinceReceived or remove the API from the client.
+	// var sinceReceived time.Time
+	// sinceSet := make(chan bool)
+	receiveFinished := listenToClients(clients, dataReceived, errorReceived, len(admins), nil, nil)
 
 	sendedResult := TestResult{description: "Time until all requests have been sended"}
 	receivedResult := TestResult{description: "Time until all responses have been received"}
-	var firstHash uint64
 	tick := time.Tick(time.Second)
 
 	for {
@@ -197,20 +176,17 @@ func ManyWriteTest(clients []Client) (r []TestResult) {
 		case value := <-errorReceived:
 			receivedResult.AddError(value)
 
-		case value := <-dataHash:
-			// TODO Does currently not work
-			break
-			if firstHash == 0 {
-				firstHash = value
-			} else if value != firstHash {
-				receivedResult.AddError(fmt.Errorf("diffrent data. %d bytes, expected %d bytes", value, firstHash))
-			}
-
 		case <-tick:
 			if LogStatus {
 				log.Println(sendedResult.CountBoth(), receivedResult.CountBoth())
 			}
 		}
+
+		// // Set sinceReceived when all requests are send. Close the channel
+		// if *sendFinished && sinceReceived.IsZero() {
+		// 	sinceReceived = time.Now()
+		// 	close(sinceSet)
+		// }
 
 		// End the test when all admins have sended there data and each client got
 		// as many responces as there are admins.
