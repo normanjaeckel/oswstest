@@ -83,5 +83,5 @@ func (t *TestResult) ave() (m time.Duration) {
 	if len(t.values) == 0 {
 		return 0
 	}
-	return time.Duration(int(a) / len(t.values))
+	return time.Duration(a.Nanoseconds() / int64(len(t.values)))
 }
